@@ -14,10 +14,11 @@ WorkBuddy 技能包：一步步带你完成**文书档案归档全流程**——
 
 ### 方式一：WorkBuddy 内一键安装（推荐）
 
-在 WorkBuddy 对话中说：
+复制这句话发给 WorkBuddy（装完自动进新手引导）：
 
 ```
-帮我安装这个 skill：https://github.com/Weeexiao/wenshu-archiving
+帮我安装这个 skill：https://github.com/Weeexiao/wenshu-archiving，
+安装完成后进入新手指引，我是第一次用。
 ```
 
 ### 方式二：手动安装
@@ -28,7 +29,11 @@ WorkBuddy 技能包：一步步带你完成**文书档案归档全流程**——
 git clone https://github.com/Weeexiao/wenshu-archiving.git "$env:USERPROFILE\.workbuddy\skills\wenshu-archiving"
 ```
 
-安装完成后新开一个 WorkBuddy 会话即可生效。
+安装完成后新开一个 WorkBuddy 会话即可生效。第一次用也可以直接说：
+
+```
+我是办公室的，第一次做文书档案归档，请引导我一步步来。
+```
 
 ## 🚀 快速开始
 
