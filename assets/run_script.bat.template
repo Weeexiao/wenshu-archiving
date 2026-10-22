@@ -1,0 +1,21 @@
+@echo off
+chcp 65001 >nul
+setlocal
+set "HERE=%~dp0"
+set "PY=C:\Users\shizh\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+if not exist "%PY%" set "PY=C:\Users\shizh\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+if not exist "%PY%" set "PY=python"
+
+echo ==========================================================
+echo  Task : CHANGE_ME
+echo  Python: %PY%
+echo ==========================================================
+echo.
+
+"%PY%" "%HERE%SCRIPT_NAME.py" ARGS_HERE
+
+echo.
+echo ==========================================================
+echo  Done. Full log written to a .txt file in this folder.
+echo ==========================================================
+pause
