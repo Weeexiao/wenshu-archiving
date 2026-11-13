@@ -1,164 +1,65 @@
-# -*- coding: utf-8 -*-
-"""归档成果自检：单元数对账、空单元、同名单元、命名格式。
-
-用法：
-    python check_archive.py --root "Z:\\...\\1  文书档案\\2025年"
-    python check_archive.py --root "..." --catalog "附件3：九建公司2025年管理类档案目录.xlsx"
-    python check_archive.py --root "..." --dept 办公室    # 只看某个部门
-
-只读，不修改任何文件。有 catalog 时会与目录表统计行、档号数量对照。
-"""
-import argparse
-import os
-import re
-import sys
+"""Read-only reconciliation of actual archive units and catalog rows."""
+from pathlib import Path
+import argparse,re,sys
 from collections import defaultdict
-
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
-PERIODS = ["永久", "长期", "短期"]
-UNIT_PAT = re.compile(r"^(\d{4})-?(.+)$")
-
-
-def scan_units(root, dept_filter=None):
-    """返回 [(期限, 部门, 单元名, 路径, 文件数)]"""
-    out = []
-    for period in PERIODS:
-        pdir = os.path.join(root, period)
-        if not os.path.isdir(pdir):
-            continue
-        for dept in sorted(os.listdir(pdir)):
-            ddir = os.path.join(pdir, dept)
-            if not os.path.isdir(ddir):
-                continue
-            if dept_filter and dept_filter not in dept:
-                continue
-            for unit in sorted(os.listdir(ddir)):
-                udir = os.path.join(ddir, unit)
-                if not os.path.isdir(udir):
-                    continue
-                n = 0
-                for _, _, files in os.walk(udir):
-                    n += len(files)
-                out.append((period, dept, unit, udir, n))
-    return out
-
-
-def catalog_stats(path):
-    """返回 {期限: (单元数, 记录数)}，从统计行解析"""
-    try:
-        import openpyxl
-    except ImportError:
-        return None
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception as e:
-        print("  [警告] 打不开目录表：%s" % e)
-        return None
-    stats = {}
-    for ws in wb.worksheets:
-        v = ws.cell(2, 1).value
-        m = re.search(r"共\s*(\d+)\s*个归档单元[、,]\s*(\d+)\s*条文件记录", str(v or ""))
-        if m:
-            stats[ws.title] = (int(m.group(1)), int(m.group(2)))
-    try:
-        wb.close()
-    except Exception:
-        pass
-    return stats
-
-
+from archive_common import PERIODS,UNIT,source_files
+def scan_units(root,dept_filter=None):
+ out=[]
+ for period in PERIODS:
+  p=Path(root)/period
+  if not p.is_dir():continue
+  for dept in sorted(p.iterdir()):
+   if not dept.is_dir() or (dept_filter and dept_filter not in dept.name):continue
+   for unit in sorted(dept.iterdir()):
+    if not unit.is_dir():continue
+    files=[f for f in unit.rglob('*') if f.is_file() and not f.name.endswith('.partial')]
+    out.append((period,dept.name,unit.name,str(unit),sum(f.stat().st_size>0 for f in files)))
+ return out
+def inspect(root,catalog=None,dept_filter=None):
+ units=scan_units(root,dept_filter);problems=[];actual={};titles=defaultdict(list)
+ for period,dept,name,path,count in units:
+  m=UNIT.fullmatch(name)
+  if not count:problems.append('空单元或只有零字节文件：'+path)
+  if not m or m[1]=='0000':problems.append('单元命名异常：'+path);continue
+  key=(period,dept,m[1]);titles[(period,dept,m[2])].append(name)
+  if key in actual:problems.append('同一期限部门序号重复：'+path)
+  actual[key]=name
+  if not re.match(r'^\d{4}-',name):problems.append('序号与题名之间缺横杠：'+path)
+  if any(p.name.endswith('.partial') for p in Path(path).rglob('*')):problems.append('复制残留临时文件：'+path)
+ for key,names in titles.items():
+  if len(names)>1:problems.append('同名待核对（不能仅凭同名删除）：'+str(key)+' '+str(names))
+ if catalog:
+  try:import openpyxl
+  except ImportError:raise RuntimeError('指定目录对账需要openpyxl，不能跳过后宣称通过')
+  wb=openpyxl.load_workbook(catalog,read_only=True,data_only=True);expected=set()
+  try:
+   for period in PERIODS:
+    if period not in wb.sheetnames:raise ValueError('目录缺表：'+period)
+    sheet=wb[period];allcodes=set();records=0
+    for row in sheet.iter_rows(min_row=4,max_col=10,values_only=True):
+     if not any(v is not None for v in row):continue
+     seq,code,_,_,creator,title,date,retention,dept,notes=row
+     if not code:problems.append('目录记录缺档号：'+period+' '+str(title));continue
+     records+=1;allcodes.add(str(code))
+     if not dept or not title or not creator or not date:problems.append('目录必填项缺失：'+str(code))
+     if retention!={'永久':'永久','长期':'30年','短期':'10年'}[period]:problems.append('期限与分表不符：'+str(code))
+     if dept_filter and dept_filter not in str(dept):continue
+     match=re.fullmatch(r'.+-GL-(20\d{2})-(Y|D30|D10)-([A-Za-z0-9]+)-(\d{4})',str(code))
+     if not match:problems.append('档号格式异常：'+str(code));continue
+     if match[2]!={'永久':'Y','长期':'D30','短期':'D10'}[period]:problems.append('档号期限码与分表不符：'+str(code))
+     expected.add((period,str(dept),match[4]))
+    m=re.search(r'共\s*(\d+)\s*个归档单元[、,，]\s*(\d+)\s*条文件记录',str(sheet.cell(2,1).value or ''))
+    if not m or (int(m[1]),int(m[2]))!=(len(allcodes),records):problems.append('统计行与实际记录不符：'+period)
+   for k in sorted(expected-set(actual)):problems.append('目录有、实体缺：'+str(k))
+   for k in sorted(set(actual)-expected):problems.append('实体有、目录缺：'+str(k))
+  finally:wb.close()
+ return units,problems
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", required=True)
-    ap.add_argument("--catalog", default="")
-    ap.add_argument("--dept", default="")
-    args = ap.parse_args()
-
-    root = os.path.abspath(args.root)
-    if not os.path.isdir(root):
-        print("[错误] 目录不存在：%s" % root)
-        return 2
-
-    units = scan_units(root, args.dept or None)
-    print("=" * 66)
-    print("归档自检：%s" % root)
-    print("=" * 66)
-
-    by_period = defaultdict(list)
-    for u in units:
-        by_period[u[0]].append(u)
-
-    problems = []
-
-    # 1. 单元数 / 空单元 / 命名
-    print("\n【一】数量与命名")
-    for period in PERIODS:
-        us = by_period.get(period, [])
-        if not us:
-            continue
-        empty = [u for u in us if u[4] == 0]
-        bad = [u for u in us if not UNIT_PAT.match(u[2])]
-        nohyphen = [u for u in us if UNIT_PAT.match(u[2]) and not re.match(r"^\d{4}-", u[2])]
-        print("  %s：%d 个单元，空单元 %d，命名异常 %d，未加横杠 %d"
-              % (period, len(us), len(empty), len(bad), len(nohyphen)))
-        for u in empty:
-            problems.append("[空单元] %s\\%s\\%s" % (period, u[1], u[2]))
-        for u in bad:
-            problems.append("[命名异常] %s\\%s\\%s" % (period, u[1], u[2]))
-
-    # 2. 同名单元（同期限同部门内）
-    print("\n【二】同名单元（同期限、同部门题名重复）")
-    print("  提示：同名不一定是重复。同名但文号/日期不同的，可能是不同批次的同类请示，需人工判断。")
-    dup_found = False
-    for period in PERIODS:
-        seen = defaultdict(list)
-        for u in by_period.get(period, []):
-            m = UNIT_PAT.match(u[2])
-            title = m.group(2) if m else u[2]
-            seen[(u[1], title)].append(u[2])
-        for (dept, title), names in seen.items():
-            if len(names) > 1:
-                dup_found = True
-                print("  %s / %s：%s" % (period, dept, " | ".join(names)))
-                problems.append("[同名单元] %s\\%s\\%s" % (period, dept, " / ".join(names)))
-    if not dup_found:
-        print("  无")
-
-    # 3. 与目录表对账
-    if args.catalog and args.dept:
-        print("\n【三】与目录表对账：已按 --dept 过滤，跳过全表对账（避免数字误报）")
-    elif args.catalog:
-        print("\n【三】与目录表对账：%s" % os.path.basename(args.catalog))
-        stats = catalog_stats(args.catalog)
-        if not stats:
-            print("  [跳过] 需要 openpyxl，或文件被占用")
-        else:
-            for period in PERIODS:
-                us = by_period.get(period, [])
-                if not us:
-                    continue
-                cat = stats.get(period)
-                if not cat:
-                    print("  %s：目录表未找到统计行" % period)
-                    continue
-                flag = "OK" if cat[0] == len(us) else "不一致"
-                print("  %s：实体 %d 个单元 / 目录 %d 个单元  -> %s" % (period, len(us), cat[0], flag))
-                if cat[0] != len(us):
-                    problems.append("[数量不一致] %s：实体 %d ≠ 目录 %d" % (period, len(us), cat[0]))
-
-    print("\n" + "-" * 66)
-    if problems:
-        print("发现 %d 处需要处理：" % len(problems))
-        for p in problems:
-            print("  " + p)
-        return 1
-    print("未发现问题。")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+ p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--catalog');p.add_argument('--dept',default='');a=p.parse_args()
+ if not Path(a.root).is_dir():print('根目录不存在');return 2
+ try:units,issues=inspect(a.root,a.catalog,a.dept or None)
+ except Exception as e:print('自检未完成：'+str(e));return 2
+ print('已检查实体单元：'+str(len(units)))
+ print('\n'.join(issues) if issues else '本次已执行检查通过'+('。' if a.catalog else '；未提供目录表，尚未进行目录对账。'))
+ return 1 if issues else 0
+if __name__=='__main__':sys.exit(main())

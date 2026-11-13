@@ -1,127 +1,61 @@
-# -*- coding: utf-8 -*-
-"""按归档计划把源文件复制成归档单元。
-
-计划文件 plan.csv（UTF-8 带 BOM 也可以），表头固定五行：
-    期限,部门,序号,题名,源路径
-    永久,办公室（党委办公室、党委工作部）,0053,九建公司2025年发文登记簿,Z:\\...\\2025年发文记录表-九建公司.xlsx
-
-用法：
-    python copy_units.py --plan plan.csv --root "Z:\\...\\2025年" --dry-run
-    python copy_units.py --plan plan.csv --root "Z:\\...\\2025年"
-
-- 目标：<root>\\<期限>\\<部门>\\<序号>-<题名>\\
-- 源路径是文件 -> 复制进单元；是目录 -> 目录内容整体复制进单元
-- 已存在的同名文件跳过（不会覆盖，可重复运行）
-- 源不存在直接报错，不会建空单元
-"""
-import argparse
-import csv
-import datetime
-import os
-import shutil
-import sys
-
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
-FIELDS = ["期限", "部门", "序号", "题名", "源路径"]
-
-
+"""Copy reviewed plan.csv; dry-run uses the same validation as execution."""
+from pathlib import Path
+import argparse,csv,datetime,shutil,sys,uuid
+from archive_common import PERIODS,component,inside,source_files,sha
+FIELDS=['期限','部门','序号','题名','源路径']
+def execute(plan,root,dry_run=False,no_hyphen=False):
+ root=Path(root).resolve()
+ if not root.is_dir():raise ValueError('归档根目录不存在')
+ with Path(plan).open(encoding='utf-8-sig',newline='') as f:
+  reader=csv.DictReader(f)
+  if not set(FIELDS)<=set(reader.fieldnames or []):raise ValueError('计划缺少必要表头')
+  rows=[{k:(r.get(k) or '').strip() for k in FIELDS} for r in reader if any((v or '').strip() for v in r.values())]
+ if not rows:raise ValueError('计划没有可执行记录')
+ jobs={};destinations={};lines=[]
+ for row in rows:
+  period=component(row['期限']);dept=component(row['部门']);seq=row['序号'];title=component(row['题名'])
+  if period not in PERIODS:raise ValueError('期限目录应为永久/长期/短期')
+  if len(seq)!=4 or not seq.isascii() or not seq.isdigit() or seq=='0000':raise ValueError('序号须为0001~9999')
+  source=Path(row['源路径']).expanduser().resolve()
+  if inside(source,root) or inside(root,source):raise ValueError('源与归档根目录不能互相包含')
+  target=(root/period/dept/(seq+('' if no_hyphen else '-')+title)).resolve()
+  if not inside(target,root):raise ValueError('目标越过归档根目录')
+  key=(period.casefold(),dept.casefold(),seq)
+  if key in destinations and destinations[key]!=target:raise ValueError('同一期限部门序号对应多个题名')
+  destinations[key]=target
+  for src in source_files(source):
+   relative=Path(src.name) if source.is_file() else src.relative_to(source)
+   dst=(target/relative).resolve()
+   if not inside(dst,target):raise ValueError('目标存在越界链接')
+   collision=str(dst).casefold()
+   if collision in jobs and sha(jobs[collision][0])!=sha(src):raise ValueError('计划中同名文件内容冲突：'+str(dst))
+   if dst.exists() and (not dst.is_file() or sha(dst)!=sha(src)):raise ValueError('现有文件同名异内容，停止覆盖：'+str(dst))
+   jobs[collision]=(src,dst)
+ for src,dst in jobs.values():
+  if dst.exists():lines.append('内容相同，跳过：'+str(dst));continue
+  if dry_run:lines.append('拟复制：'+str(src)+' -> '+str(dst));continue
+  dst.parent.mkdir(parents=True,exist_ok=True);temp=dst.with_name(dst.name+'.'+uuid.uuid4().hex+'.partial')
+  try:
+   shutil.copy2(src,temp)
+   if sha(temp)!=sha(src):raise ValueError('复制后内容校验失败')
+   try:
+    # Exclusive creation: never overwrite an archive file created after preflight.
+    with dst.open('xb') as out,temp.open('rb') as inp:shutil.copyfileobj(inp,out)
+    shutil.copystat(temp,dst)
+    if sha(dst)!=sha(temp):raise ValueError('目标内容校验失败')
+   except FileExistsError:
+    if not dst.is_file() or sha(dst)!=sha(temp):raise ValueError('复制期间目标被其他程序修改')
+   lines.append('已复制并校验：'+str(dst))
+  finally:
+   if temp.exists():temp.unlink()
+ return lines
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--plan", required=True)
-    ap.add_argument("--root", required=True)
-    ap.add_argument("--log", default="")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--no-hyphen", action="store_true", help="单元名不用 序号-题名，改为 序号题名")
-    args = ap.parse_args()
-
-    root = os.path.abspath(args.root)
-    if not os.path.isdir(root):
-        print("[错误] 归档根目录不存在：%s" % root)
-        return 2
-
-    rows = []
-    with open(args.plan, encoding="utf-8-sig", newline="") as f:
-        for r in csv.DictReader(f):
-            if not r or not (r.get("源路径") or "").strip():
-                continue
-            rows.append({k: (r.get(k) or "").strip() for k in FIELDS})
-
-    lines = []
-    def say(m):
-        print(m)
-        lines.append(m)
-
-    say("=" * 66)
-    say("开始：%s  模式：%s" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "预览" if args.dry_run else "实际复制"))
-    say("计划 %d 条，归档根目录 %s" % (len(rows), root))
-    say("=" * 66)
-
-    ok = skip = fail = 0
-    for i, r in enumerate(rows, 1):
-        period, dept, seq, title, src = r["期限"], r["部门"], r["序号"], r["题名"], r["源路径"]
-        if not os.path.exists(src):
-            say("✗ [源不存在] %s" % src)
-            fail += 1
-            continue
-        if os.path.abspath(src).startswith(root):
-            say("✗ [拒绝] 源在归档目录内，可能是自己抄自己：%s" % src)
-            fail += 1
-            continue
-        name = ("%s%s" % (seq, title)) if args.no_hyphen else ("%s-%s" % (seq, title))
-        target = os.path.join(root, period, dept, name)
-
-        if os.path.isdir(src):
-            n = sum(len(fs) for _, _, fs in os.walk(src))
-        else:
-            n = 1
-
-        if args.dry_run:
-            say("[%d/%d] %s / %s / %s  <- %d 项" % (i, len(rows), period, dept, name, n))
-            ok += 1
-            continue
-
-        try:
-            os.makedirs(target, exist_ok=True)
-            if os.path.isdir(src):
-                copied = 0
-                for dp, _, fs in os.walk(src):
-                    rel = os.path.relpath(dp, src)
-                    dst_dir = target if rel == "." else os.path.join(target, rel)
-                    os.makedirs(dst_dir, exist_ok=True)
-                    for fn in fs:
-                        dst = os.path.join(dst_dir, fn)
-                        if os.path.exists(dst):
-                            continue
-                        shutil.copy2(os.path.join(dp, fn), dst)
-                        copied += 1
-                say("✓ %s / %s" % (name, "复制 %d 个文件" % copied))
-            else:
-                dst = os.path.join(target, os.path.basename(src))
-                if os.path.exists(dst):
-                    say("- %s（已存在，跳过）" % name)
-                    skip += 1
-                    continue
-                shutil.copy2(src, dst)
-                say("✓ %s / %s" % (name, os.path.basename(src)))
-            ok += 1
-        except Exception as e:
-            say("✗ [失败] %s :: %s" % (name, e))
-            fail += 1
-
-    say("-" * 66)
-    say("完成：成功 %d，跳过 %d，失败 %d" % (ok, skip, fail))
-
-    if args.log and not args.dry_run:
-        with open(args.log, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n\n" + "=" * 66 + "\n\n")
-        print("日志：%s" % args.log)
-    return 0 if fail == 0 else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+ p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--root',required=True);p.add_argument('--log',default='');p.add_argument('--dry-run',action='store_true');p.add_argument('--no-hyphen',action='store_true');a=p.parse_args()
+ try:lines=execute(a.plan,a.root,a.dry_run,a.no_hyphen);code=0
+ except Exception as e:lines=['失败：'+str(e)];code=1
+ print('\n'.join(lines))
+ if a.log and not a.dry_run:
+  log=Path(a.log);log.parent.mkdir(parents=True,exist_ok=True)
+  with log.open('a',encoding='utf-8') as f:f.write(str(datetime.datetime.now())+'\n'+'\n'.join(lines)+'\n')
+ return code
+if __name__=='__main__':sys.exit(main())

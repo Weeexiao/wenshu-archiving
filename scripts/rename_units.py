@@ -24,7 +24,7 @@ except Exception:
     pass
 
 PERIODS = ["永久", "长期", "短期"]
-PAT = re.compile(r"^(\d{4})-?(.+)$")
+PAT = re.compile(r"^(\d{4})(?!\d)-?(.+)$")
 
 
 def main():
@@ -83,7 +83,7 @@ def main():
                 target = os.path.join(ddir, want)
                 if os.path.exists(target):
                     say("  [冲突跳过] %s" % unit)
-                    skip += 1
+                    fail += 1
                     continue
                 if args.dry_run:
                     done += 1

@@ -19,7 +19,7 @@ try:
 except Exception:
     pass
 
-SKIP_KEYWORDS = ["1  文书档案", "06.档案室", "08.档案管理", "$RECYCLE.BIN", "System Volume Information"]
+SKIP_KEYWORDS = ["$RECYCLE.BIN", "System Volume Information"]
 
 
 def human(n):
@@ -28,7 +28,7 @@ def human(n):
 
 def count_files(path):
     c = 0
-    for _, _, files in os.walk(path):
+    for _, _, files in os.walk(path,onerror=lambda e: (_ for _ in ()).throw(e)):
         c += len(files)
     return c
 
@@ -37,7 +37,8 @@ def folder_year(dirpath, src):
     """从最近的祖先目录名里取年份（如 2025 / 04.2025年），没有则返回 None"""
     rel = os.path.relpath(dirpath, src)
     if rel == ".":
-        return None
+        m=re.search(r"(20\d{2})",os.path.basename(os.path.normpath(src)))
+        return m.group(1) if m else None
     parts = [p for p in rel.split(os.sep) if p not in (".", "")]
     for p in reversed(parts):
         m = re.search(r"(20\d{2})", p)
@@ -48,14 +49,15 @@ def folder_year(dirpath, src):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", required=True, nargs="+",
+    ap.add_argument("--src", required=True, nargs="+",action="append",
                     help="一个或多个源目录；资料分散时把每个位置都传进来")
     ap.add_argument("--year", default=str(datetime.date.today().year))
     ap.add_argument("--depth", type=int, default=6)
     ap.add_argument("--out", default="")
+    ap.add_argument("--exclude",action="append",default=[],help="明确排除的成果目录，可重复")
     args = ap.parse_args()
 
-    srcs = [os.path.abspath(s) for s in args.src]
+    srcs = list(dict.fromkeys(os.path.realpath(s) for group in args.src for s in group))
     for s in srcs:
         if not os.path.isdir(s):
             print("[错误] 源目录不存在：%s" % s)
@@ -63,9 +65,9 @@ def main():
 
     all_rows = []
     for src in srcs:
-        all_rows.extend(scan_one(src, args.year, args.depth))
+        all_rows.extend(scan_one(src, args.year, args.depth,args.exclude))
 
-    rows = all_rows
+    rows = list({os.path.normcase(os.path.realpath(os.path.join(r['src'],r['path']))):r for r in all_rows}.values())
     if not rows:
         print("未找到 %s 年的候选材料。" % args.year)
         return 0
@@ -92,14 +94,14 @@ def main():
     return 0
 
 
-def scan_one(src, year, depth):
+def scan_one(src, year, depth,exclude=None):
     """扫描单个源目录，返回候选行列表。"""
     rows = []
-    for dirpath, dirnames, filenames in os.walk(src):
+    for dirpath, dirnames, filenames in os.walk(src,onerror=lambda e: (_ for _ in ()).throw(e)):
         rel = os.path.relpath(dirpath, src)
         d = 0 if rel == "." else rel.count(os.sep) + 1
         # 跳过档案成果目录
-        if any(k in dirpath for k in SKIP_KEYWORDS):
+        if any(k in dirpath for k in SKIP_KEYWORDS) or any(os.path.commonpath([os.path.realpath(dirpath),os.path.realpath(x)])==os.path.realpath(x) for x in (exclude or []) if os.path.splitdrive(dirpath)[0].lower()==os.path.splitdrive(os.path.abspath(x))[0].lower()):
             dirnames[:] = []
             continue
         if d > depth:
@@ -108,15 +110,11 @@ def scan_one(src, year, depth):
 
         # 判断当前目录属于哪个年度（取最近一层带年份的目录名）
         fy = folder_year(dirpath, src)
-        if fy is not None and fy != year:
-            dirnames[:] = [] if d >= 1 else dirnames
-            continue
+        # A folder year is only a clue; files may concern another year or close later.
 
         # 文件级候选
         for fn in filenames:
             if fn.startswith("~$") or fn.startswith("."):
-                continue
-            if fy != year and year not in fn:
                 continue
             fp = os.path.join(dirpath, fn)
             try:
@@ -130,7 +128,7 @@ def scan_one(src, year, depth):
                 "count": 1,
                 "mtime": human(st.st_mtime),
                 "size": st.st_size,
-                "flag": "",
+                "flag": "年度待核对（文件名/目录年不能代替成文日期）" if fy != year and year not in fn else "年度线索匹配，仍需核对正文",
             })
 
         # 识别"混装夹"：同级里其他目录都带数字前缀、它不带
