@@ -59,4 +59,23 @@ class Workflows(unittest.TestCase):
  def test_rename_collision_returns_failure(self):
   for name in ['0001测试','0001-测试']:(self.root/'永久/办公室'/name).mkdir(parents=True)
   p=subprocess.run([sys.executable,str(S/'scripts/rename_units.py'),'--root',str(self.root),'--dry-run'],capture_output=True);self.assertEqual(p.returncode,1)
+ def extended_plan(self,rows):
+  with self.plan.open('w',encoding='utf-8-sig',newline='') as f:w=csv.writer(f);w.writerow(FIELDS+['关联组','子目录']);w.writerows(rows)
+ def test_related_files_stay_in_one_unit_with_subfolders(self):
+  reply=self.b/'reply';reply.mkdir();(reply/'a.txt').write_text('reply')
+  approval=self.src/'审批单';approval.mkdir();(approval/'签批.txt').write_text('approved')
+  self.extended_plan([['长期','办公室','0001','某事项',str(self.src),'事项1','1-请示'],['长期','办公室','0001','某事项',str(reply),'事项1','2-批复']]);execute(self.plan,self.root)
+  unit=self.root/'长期/办公室/0001-某事项';self.assertEqual((unit/'1-请示/a.txt').read_text(),'alpha');self.assertEqual((unit/'2-批复/a.txt').read_text(),'reply');self.assertTrue((unit/'1-请示/审批单/签批.txt').is_file());self.assertEqual(len(list((self.root/'长期/办公室').iterdir())),1)
+ def test_related_group_cannot_split_by_period_or_number(self):
+  for period,seq in [('永久','0001'),('长期','0002')]:
+   self.extended_plan([['长期','办公室','0001','某事项',str(self.src),'事项1',''],[period,'办公室',seq,'某事项',str(self.src),'事项1','']])
+   with self.assertRaisesRegex(ValueError,'关联组'):execute(self.plan,self.root,True)
+  self.assertFalse(list(self.root.iterdir()))
+ def test_related_subdirectory_cannot_escape(self):
+  self.extended_plan([['长期','办公室','0001','某事项',str(self.src),'事项1','../外部']])
+  with self.assertRaises(ValueError):execute(self.plan,self.root)
+ def test_preserves_multiformat_document_and_approval_folder(self):
+  for name in ['通知.ofd','通知.mhtml','通知.pdf','附件.xlsx']:(self.src/name).write_text(name)
+  approval=self.src/'审批单';approval.mkdir();(approval/'流程.pdf').write_text('workflow');self.plan_rows([['永久','办公室','0001','通知',str(self.src)]]);execute(self.plan,self.root)
+  unit=self.root/'永久/办公室/0001-通知';self.assertEqual({x.relative_to(unit).as_posix() for x in unit.rglob('*') if x.is_file()},{x.relative_to(self.src).as_posix() for x in self.src.rglob('*') if x.is_file()})
 if __name__=='__main__':unittest.main()

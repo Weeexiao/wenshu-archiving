@@ -3,15 +3,16 @@ from pathlib import Path
 import argparse,csv,datetime,shutil,sys,uuid
 from archive_common import PERIODS,component,inside,source_files,sha
 FIELDS=['期限','部门','序号','题名','源路径']
+OPTIONAL=['关联组','子目录']
 def execute(plan,root,dry_run=False,no_hyphen=False):
  root=Path(root).resolve()
  if not root.is_dir():raise ValueError('归档根目录不存在')
  with Path(plan).open(encoding='utf-8-sig',newline='') as f:
   reader=csv.DictReader(f)
   if not set(FIELDS)<=set(reader.fieldnames or []):raise ValueError('计划缺少必要表头')
-  rows=[{k:(r.get(k) or '').strip() for k in FIELDS} for r in reader if any((v or '').strip() for v in r.values())]
+  rows=[{k:(r.get(k) or '').strip() for k in FIELDS+OPTIONAL} for r in reader if any((v or '').strip() for v in r.values())]
  if not rows:raise ValueError('计划没有可执行记录')
- jobs={};destinations={};lines=[]
+ jobs={};destinations={};groups={};lines=[]
  for row in rows:
   period=component(row['期限']);dept=component(row['部门']);seq=row['序号'];title=component(row['题名'])
   if period not in PERIODS:raise ValueError('期限目录应为永久/长期/短期')
@@ -23,9 +24,14 @@ def execute(plan,root,dry_run=False,no_hyphen=False):
   key=(period.casefold(),dept.casefold(),seq)
   if key in destinations and destinations[key]!=target:raise ValueError('同一期限部门序号对应多个题名')
   destinations[key]=target
+  group=row['关联组']
+  if group:
+   if group in groups and groups[group]!=target:raise ValueError('同一关联组被拆入不同归档单元：'+group)
+   groups[group]=target
+  subdir=component(row['子目录']) if row['子目录'] else ''
   for src in source_files(source):
    relative=Path(src.name) if source.is_file() else src.relative_to(source)
-   dst=(target/relative).resolve()
+   dst=(target/subdir/relative).resolve()
    if not inside(dst,target):raise ValueError('目标存在越界链接')
    collision=str(dst).casefold()
    if collision in jobs and sha(jobs[collision][0])!=sha(src):raise ValueError('计划中同名文件内容冲突：'+str(dst))

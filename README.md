@@ -12,7 +12,9 @@
 
 首次运行 `python scripts/restore_resources.py` 从内置文本资源还原三表Excel模板。无需外部模板下载。所有业务资源随包携带，发布包只含文本文件，避免SkillHub跳过Excel导致模板缺失。
 
-## 1.1.0优化
+## 1.1.1优化
+
+实体成果按“年度/永久或长期或短期/部门/四位序号-题名”输出。正文、附件、审批单及请示批复等同事项关联件进入同一单元，保留多格式版本及内部子目录。计划支持关联组并拒绝将同组拆到不同单元，见[成果结构与关联件](references/98-成果结构与关联件.md)。
 
 - 合并重复说明，取消逐阶段反复审批，只确认缺项和实际歧义。
 - 年份不明材料保留待核对；重复--src正确合并，成果目录可明确排除。
@@ -27,4 +29,4 @@ python -m unittest discover -s tests -v
 python scripts/restore_resources.py
 ```
 
-SkillHub发布目录须有SKILL.md根文件；slug为wenshu-archiving，版本1.1.0，MIT许可。详细业务流程见SKILL.md，辅助指南按需读取。
+SkillHub发布目录须有SKILL.md根文件；slug为wenshu-archiving，版本1.1.1，MIT许可。详细业务流程见SKILL.md，辅助指南按需读取。
